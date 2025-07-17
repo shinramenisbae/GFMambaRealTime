@@ -1,0 +1,41 @@
+base:
+  seed: 42
+  lr: 0.0001
+  weight_decay: 0.001
+  batch_size: 16
+  n_epochs: 80
+  num_workers: 8
+  train_mode: regression
+  do_validation: true
+  early_stopping_patience: 8
+  lr_scheduler: 'cosine'
+
+dataset:
+  datasetName: mosi
+  dataPath: /data/zzhe232/GFMamba/datasets/aligned_50.pkl
+model:
+  input_dim: [768, 20, 5]     # [text_dim, video_dim, audio_dim]
+  dim: 64  #模型内传递的特征维度 48 80 
+  ContextExtractor:
+    conv_kernel_size: 5
+    hidden_ratio: 2
+    dropout: 0.5 #由于hidden ration降低，dropout也相应降低。适当调整
+
+  TGMamba:
+    num_layers: 1
+    dropout: 0.5
+    causal: false
+    mamba_config:
+      d_state: 12
+      expand: 2
+      d_conv: 4
+      bidirectional: true
+  IntraModalEnhancer:
+      dropout: 0.5
+  graph_fusion:
+    num_classes: 1
+    hidden: 16
+    dropout: 0.5
+    fusion_hidden: 24
+
+  
