@@ -9,9 +9,9 @@ from torch.cuda.amp import custom_bwd, custom_fwd
 
 from einops import rearrange, repeat
 
-from causal_conv1d import causal_conv1d_fn
-import causal_conv1d_cuda
-import selective_scan_cuda
+try:\n    from causal_conv1d import causal_conv1d_fn\n    HAVE_CAUSAL = True\nexcept Exception:\n    HAVE_CAUSAL = False\n    import torch.nn.functional as F  # fallback conv\n    def causal_conv1d_fn(x, weight, bias, activation='silu'):\n        d, w = weight.shape\n        W = weight.view(d, 1, w)\n        y = F.conv1d(x, W, bias=bias, stride=1, padding=w-1, groups=d)\n        y = y[:, :, :x.shape[-1]]\n        if activation == 'silu':\n            y = F.silu(y)\n        elif activation == 'tanh':\n            y = torch.tanh(y)\n        return y
+try:\n    import causal_conv1d_cuda\n    HAVE_CCONV_CUDA = True\nexcept Exception:\n    causal_conv1d_cuda = None\n    HAVE_CCONV_CUDA = False
+try:\n    import selective_scan_cuda\n    HAVE_SELECTIVE_CUDA = True\nexcept Exception:\n    selective_scan_cuda = None\n    HAVE_SELECTIVE_CUDA = False
 
 
 class SelectiveScanFn(torch.autograd.Function):
@@ -716,4 +716,48 @@ def bimamba_inner_ref(
     y_b = selective_scan_fn(x.flip([-1]), delta.flip([-1]), A_b, B.flip([-1]), C.flip([-1]), D, z.flip([-1]),
                             delta_bias, delta_softplus=True)
     y = y + y_b.flip([-1])
-    return F.linear(rearrange(y, "b d l -> b l d"), out_proj_weight, out_proj_bias)
+    return F.linear(rearrange(y, "b d l -> b l d"), out_proj_weight, out_proj_bias)\n# Fallback to reference implementations when CUDA extensions are unavailable
+try:
+    _ = selective_scan_cuda
+    _ = causal_conv1d_cuda
+    _HAVE_EXT = True
+except Exception:
+    _HAVE_EXT = False
+
+if not _HAVE_EXT:
+    # Use pure-PyTorch reference functions
+    selective_scan_fn = selective_scan_ref
+    mamba_inner_fn = mamba_inner_ref
+    bimamba_inner_fn = bimamba_inner_ref
+    def mamba_inner_fn_no_out_proj(
+            xz, conv1d_weight, conv1d_bias, x_proj_weight, delta_proj_weight,
+            A, B=None, C=None, D=None, delta_bias=None, B_proj_bias=None,
+            C_proj_bias=None, delta_softplus=True
+    ):
+        L = xz.shape[-1]
+        delta_rank = delta_proj_weight.shape[1]
+        d_state = A.shape[-1] * (1 if not A.is_complex() else 2)
+        x, z = xz.chunk(2, dim=1)
+        conv1d_weight2 = rearrange(conv1d_weight, 'd 1 w -> d w')
+        conv1d_out = causal_conv1d_fn(x, conv1d_weight2, conv1d_bias, 'silu')
+        x_dbl = F.linear(rearrange(conv1d_out, 'b d l -> (b l) d'), x_proj_weight)  # (bl d)
+        delta = delta_proj_weight @ x_dbl[:, :delta_rank].t()
+        delta = rearrange(delta, 'd (b l) -> b d l', l=L)
+        if B is None:  # variable B
+            B = x_dbl[:, delta_rank:delta_rank + d_state]  # (bl d)
+            if B_proj_bias is not None:
+                B = B + B_proj_bias.to(dtype=B.dtype)
+            if not A.is_complex():
+                B = rearrange(B, '(b l) dstate -> b dstate l', l=L).contiguous()
+            else:
+                B = rearrange(B, '(b l) (dstate two) -> b dstate (l two)', l=L, two=2).contiguous()
+        if C is None:  # variable C
+            C = x_dbl[:, -d_state:]  # (bl d)
+            if C_proj_bias is not None:
+                C = C + C_proj_bias.to(dtype=C.dtype)
+            if not A.is_complex():
+                C = rearrange(C, '(b l) dstate -> b dstate l', l=L).contiguous()
+            else:
+                C = rearrange(C, '(b l) (dstate two) -> b dstate (l two)', l=L, two=2).contiguous()
+        y = selective_scan_ref(conv1d_out, delta, A, B, C, D, z=z, delta_bias=delta_bias, delta_softplus=True)
+        return y  # [b, d, l]

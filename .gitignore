@@ -1,0 +1,48 @@
+# Python bytecode and caches
+**/__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+.conda/
+.python-version
+
+# Build/artifacts
+build/
+dist/
+*.egg-info/
+
+# Checkpoints, datasets, logs, and runs
+ckpt/
+data/
+runs/
+logs/
+*.pth
+*.pt
+*.ckpt
+*.pkl
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+.cache/
+
+# IDE/editor
+.vscode/
+.idea/
+
+# OS-specific junk
+Thumbs.db
+Desktop.ini
+
+# Binaries (in case of native extensions)
+*.so
+*.pyd
+*.dll
+
+# Env/config secrets
+.env
